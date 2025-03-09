@@ -94,28 +94,36 @@ def winrate(moves, katago):
 
     winrate = 0.5
     win_percent= []
+    old_raw_Lead = 0
     displayboard = board.copy()
-    i = 0
+    i = 1
     for color, move in moves:
         if move != "pass":
             row, col = move
             displayboard.play(row, col, color)
-            print(color, move)
+            #print(color, move)
             kata_rep = katago.query(board, moves[:i], komi)
             #print(sgfmill.ascii_boards.render_board(displayboard))
             raw_winrate = kata_rep['rootInfo']['rawWinrate']
+            raw_Lead = kata_rep['rootInfo']['rawLead']
             if i % 2 == 0:
                 old_winrate = winrate
                 winrate = 1 - raw_winrate
 
+                raw_Lead_diff = abs(raw_Lead - old_raw_Lead)
+                old_raw_Lead = raw_Lead
+
                 delta = abs(winrate - old_winrate)
-                if delta > 0.5:
-                    print(sgfmill.ascii_boards.render_board(displayboard))
+
+                if delta > 0.5 and raw_Lead_diff > 20:
+                    #print(sgfmill.ascii_boards.render_board(displayboard))
+                    #print("delta", delta)
+                    print(i)
+                    print(kata_rep['rootInfo'])
 
             win_percent.append(winrate)
-
-
             i += 1
+
 
     return win_percent
 

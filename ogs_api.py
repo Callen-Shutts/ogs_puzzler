@@ -17,14 +17,12 @@ def get_moves(id: int):
 
 
 def get_players(id: int):
-    url = f'https://online-go.com/api/v1/players/{id}/games/?page_size=100&ended__isnull=false'
+    url = f'https://online-go.com/api/v1/players/{id}/games/?page_size=100&height=19&width=19&ordering=-ended'
     headers = {
         'accept': 'application/json',
     }
     response = requests.get(url, headers=headers)
     resp = response.json()
-
-
     list_of_ids = []
     for i in resp['results']:
         list_of_ids.append(i['id'])
@@ -34,9 +32,15 @@ def get_players(id: int):
 katago = KataGo('kata/katago.exe', 'kata/default_gtp.cfg', 'kata/kata1-b28c512nbt-s8268121856-d4612191185.bin.gz')
 
 list_of_ids = get_players(722642)
+print(len(list_of_ids))
+i = 0
 for id in list_of_ids:
+    print("----------------game id ---------------")
+    print(id)
+    print("----------------game id ---------------")
     moves = get_moves(id)
     winrate(moves, katago)
+    i += 1
 
 katago.close()
 
