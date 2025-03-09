@@ -6,7 +6,7 @@ import sgfmill
 import sgfmill.boards
 import sgfmill.ascii_boards
 from typing import Tuple, List, Optional, Union, Literal, Any, Dict
-from ogs_api import get_moves
+
 
 Color = Union[Literal["b"],Literal["w"]]
 Move = Union[None,Literal["pass"],Tuple[int,int]]
@@ -86,36 +86,40 @@ class KataGo:
 
         # print(response)
         return response
+def winrate(moves, katago):
+    #download and place katago in a subfolder called katago and or change the path to the executable
 
-#download and place katago in a subfolder called katago and or change the path to the executable
-katago = KataGo('kata/katago.exe', 'kata/default_gtp.cfg', 'kata/kata1-b28c512nbt-s8268121856-d4612191185.bin.gz')
+    board = sgfmill.boards.Board(19)
+    komi = 6.5
 
-board = sgfmill.boards.Board(19)
-komi = 6.5
-moves = get_moves()
+    winrate = 0.5
+    win_percent= []
+    displayboard = board.copy()
+    i = 0
+    for color, move in moves:
+        if move != "pass":
+            row, col = move
+            displayboard.play(row, col, color)
+            print(color, move)
+            kata_rep = katago.query(board, moves[:i], komi)
+            #print(sgfmill.ascii_boards.render_board(displayboard))
+            raw_winrate = kata_rep['rootInfo']['rawWinrate']
+            if i % 2 == 0:
+                old_winrate = winrate
+                winrate = 1 - raw_winrate
 
-win_percent= []
-displayboard = board.copy()
-i = 0
-for color, move in moves:
-    if move != "pass":
-        row,col = move
-        displayboard.play(row,col,color)
-        kata_rep = katago.query(board, moves[:i], komi)
-        #print(sgfmill.ascii_boards.render_board(displayboard))
-        winrate = kata_rep['rootInfo']['rawWinrate']
-        if i % 2 == 0:
-            winrate = 1 - winrate
-        win_percent.append(winrate)
-        print(i)
-        i += 1
-katago.close()
+                delta = abs(winrate - old_winrate)
+                if delta > 0.5:
+                    print(sgfmill.ascii_boards.render_board(displayboard))
 
-import matplotlib.pyplot as plt
+            win_percent.append(winrate)
 
-plt.plot(range(len(win_percent)), win_percent)
-plt.xlabel('Move Number')
-plt.ylabel('Win Percent')
-plt.title('Win Percent vs Move Number')
-plt.show()
+
+            i += 1
+
+    return win_percent
+
+
+
+
 
