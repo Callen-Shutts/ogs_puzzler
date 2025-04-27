@@ -12,6 +12,7 @@ def get_moves(id: int):
 
     moves = resp['gamedata']['moves']
     converted_moves = [["b" if i % 2 == 0 else "w", (move[0], move[1])] for i, move in enumerate(moves) if move[0] >= 0 and move[1] >= 0]
+    print(converted_moves)
 
     return converted_moves
 
@@ -31,7 +32,7 @@ def get_players(id: int):
 
 katago = KataGo('kata/katago.exe', 'kata/default_gtp.cfg', 'kata/kata1-b28c512nbt-s8268121856-d4612191185.bin.gz')
 
-list_of_ids = get_players(722642)
+list_of_ids = get_players(946392)
 print(len(list_of_ids))
 i = 0
 for id in list_of_ids:
