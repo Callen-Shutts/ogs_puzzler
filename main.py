@@ -106,8 +106,9 @@ def winrate(moves, katago):
             row, col = move
             displayboard.play(row, col, color)
             # print(color, move)
+            print('waddle')
             kata_rep = katago.query(board, moves[:i], komi)
-            # print(sgfmill.ascii_boards.render_board(displayboard))
+            #print(sgfmill.ascii_boards.render_board(displayboard))
             raw_winrate = kata_rep['rootInfo']['rawWinrate']
             raw_Lead = kata_rep['rootInfo']['rawLead']
             if i % 2 == 0:
@@ -124,7 +125,7 @@ def winrate(moves, katago):
                     # print("delta", delta)
                     print(i)
                     print(kata_rep['rootInfo'])
-                    get_sequnce(board, moves[:i - 1], komi, katago)
+                    get_sequence(board, moves[:i - 1], komi, katago)
 
             win_percent.append(winrate)
             i += 1
@@ -147,7 +148,6 @@ def convert_move(moves, new_move):
     return (color, (letter_to_number(letter) + 1, int(number)))
 
 # note we can change the strngth of the second player to maybe get mroe intersting local moves
-
 def play_best_move(board, moves, komi, katago):
     kata_rep = katago.query(board, moves, komi)
     move = kata_rep['moveInfos'][0]['move']
@@ -175,6 +175,7 @@ def play_pass(board, moves, komi, katago):
 
 # will run the algorithm to get the sequence of moves that defines a puzzle
 def get_sequence(board, moves, komi, katago):
+    i = 0
     moves_len = len(moves)
     flag = False
     # play for the person I care about
@@ -186,14 +187,17 @@ def get_sequence(board, moves, komi, katago):
     while flag == False:
         moves, new_winrate, _ = play_pass(board, moves, komi, katago)
         delta = abs(old_winrate - winrate)
-        if delta > .5:
-            play_best_move()
-            play_best_move()
+        if delta > .4:
+            moves =  moves[:-1]
+            # the person i care about moves
+            moves, _, _= play_best_move(board, moves, komi, katago)
+            # the other person moves and i grab the winrate
+            moves, old_winrate, _ = play_best_move(board, moves, komi, katago)
         else:
-            moves =
-            return moves[moves_len:  ]
+            return moves[moves_len:]
+        i += 1
+        if i > 10:
+            print("loop")
+            break
 
-
-
-
-    return puzz_sequence
+    return None
