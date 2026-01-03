@@ -1,0 +1,4 @@
+# Ignore all files in the kata folder
+kata/
+gtp_logs/
+logs/
