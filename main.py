@@ -107,7 +107,7 @@ def winrate(moves, katago):
             displayboard.play(row, col, color)
             # print(color, move)
             kata_rep = katago.query(board, moves[:i], komi)
-            # print(sgfmill.ascii_boards.render_board(displayboard))
+            print(sgfmill.ascii_boards.render_board(displayboard))
             raw_winrate = kata_rep['rootInfo']['rawWinrate']
             raw_Lead = kata_rep['rootInfo']['rawLead']
             if i % 2 == 0:
@@ -124,7 +124,7 @@ def winrate(moves, katago):
                     # print("delta", delta)
                     print(i)
                     print(kata_rep['rootInfo'])
-                    get_sequnce(board, moves[:i - 1], komi, katago)
+                    #get_sequnce(board, moves[:i - 1], komi, katago)
 
             win_percent.append(winrate)
             i += 1
@@ -190,10 +190,8 @@ def get_sequence(board, moves, komi, katago):
             play_best_move()
             play_best_move()
         else:
-            moves =
+            moves = 'waddle'
             return moves[moves_len:  ]
 
 
 
-
-    return puzz_sequence
