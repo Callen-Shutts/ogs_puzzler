@@ -73,11 +73,11 @@ def analyze_player_games(player_id: int, max_games: int = 100, verbose: bool = T
     
     finally:
         katago.close()
-
+"""
 if __name__ == "__main__":
     # Example usage: analyze games from player 722642
     player_id = 946392
-    puzzles = analyze_player_games(player_id, max_games=1000, verbose=False)
+    puzzles = analyze_player_games(player_id, max_games=1000, verbose=True)
     
     print(f"\n\n{'#'*60}")
     print("SUMMARY")
@@ -95,11 +95,10 @@ if __name__ == "__main__":
 """
 if __name__ == "__main__":
     # Analyze one example game
-    game_id = 70442729
+    game_id = 81997022
     katago = KataGo('kata/katago.exe', 'kata/default_gtp.cfg', 'kata/kata1-b28c512nbt-s8268121856-d4612191185.bin.gz')
     moves, komi = get_moves(game_id)
     puzzles = find_puzzles_in_game(moves, katago, komi=komi, verbose=True)
     print(f"\nPuzzles found in game {game_id}:")
     for i, puzzle in enumerate(puzzles):
         print(f"  Puzzle {i+1}: {puzzle}")
-"""
