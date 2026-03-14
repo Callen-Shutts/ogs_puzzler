@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import time
 from threading import Thread
@@ -79,6 +80,26 @@ class KataGo:
             query["maxVisits"] = max_visits
         return self.query_raw(query)
 
+    def query_stones(self, initial_stones: List[Tuple[Color, Tuple[int, int]]], moves: List[Tuple[Color, Move]], komi: float, board_size: int = 19, max_visits=None):
+        """Query KataGo with an explicit list of initial stones instead of a board.
+
+        This avoids constructing a sgfmill Board (which applies capture logic)
+        and is useful for testing pruned positions.
+        """
+        query = {}
+        query["id"] = str(self.query_counter)
+        self.query_counter += 1
+        query["moves"] = [(color, sgfmill_to_str(move)) for color, move in moves]
+        query["initialStones"] = [(color, sgfmill_to_str(coord)) for color, coord in initial_stones]
+        query["rules"] = "Chinese"
+        query["komi"] = komi
+        query["boardXSize"] = board_size
+        query["boardYSize"] = board_size
+        query["includePolicy"] = True
+        if max_visits is not None:
+            query["maxVisits"] = max_visits
+        return self.query_raw(query)
+
     def query_raw(self, query: Dict[str, Any]):
         self.katago.stdin.write((json.dumps(query) + "\n").encode())
         self.katago.stdin.flush()
@@ -109,6 +130,7 @@ class Puzzle:
         self.initial_lead = initial_lead
         self.final_winrate = None
         self.final_lead = None
+        self.initial_stones: Optional[List[Tuple[Color, Tuple[int, int]]]] = None  # Pruned starting position
 
     def __repr__(self):
         return f"Puzzle(start={self.start_move_index}, sequence_length={len(self.puzzle_sequence)}, winrate_change={self.initial_winrate:.2%})"
@@ -118,11 +140,14 @@ class PuzzleFinder:
     """Finds puzzles in Go games based on winrate and lead changes"""
     
     # Thresholds for detecting puzzle start
-    WINRATE_THRESHOLD = 0.20  # 20% winrate change
-    LEAD_THRESHOLD = 50.0      # 50 points lead change
-    
+    WINRATE_THRESHOLD = 0.15  # 15% winrate change
+    LEAD_THRESHOLD = 8.0      # 8 points lead change (typical puzzle swing)
+
     # Threshold for detecting puzzle end (pass test)
     PASS_SWING_THRESHOLD = 10.0  # If passing only loses 10 points, puzzle is over
+
+    # Deduplication: minimum moves to skip after a puzzle is detected
+    MIN_COOLDOWN_MOVES = 5
     
     def __init__(self, katago: KataGo, komi: float = 6.5):
         self.katago = katago
@@ -141,74 +166,82 @@ class PuzzleFinder:
         winrates = []
         leads = []
         puzzles = []
-        
+
         displayboard = self.board.copy()
-        
+
         prev_winrate = 0.5
         prev_lead = 0.0
-        
+        cooldown_until = -1  # move index below which detection is suppressed
+
         for i, (color, move) in enumerate(moves):
             if move is None or move == "pass":
                 continue
-                
+
             row, col = move
             displayboard.play(row, col, color)
-            
+
             # Query KataGo for this position
             kata_resp = self.katago.query(self.board, moves[:i+1], self.komi)
-            
+
             if verbose:
                 print(f"\nMove {i+1}: {color} {sgfmill_to_str(move)}")
                 print(sgfmill.ascii_boards.render_board(displayboard))
-            
+
             # Get winrate and lead from KataGo response
             root_info = kata_resp['rootInfo']
             raw_winrate = root_info['rawWinrate']
             raw_lead = root_info['rawLead']
-            
-            # Normalize winrate to be from Black's perspective
-            # After black moves (color == 'b'), white is to move, raw_winrate is white's, so black's is 1 - raw_winrate
-            # After white moves (color == 'w'), black is to move, raw_winrate is black's
+
+            # Normalize to Black's perspective
             if color == 'b':
                 current_winrate = 1 - raw_winrate
                 current_lead = -raw_lead
             else:
                 current_winrate = raw_winrate
                 current_lead = raw_lead
-            
+
             winrates.append(current_winrate)
             leads.append(current_lead)
-            
+
             # Calculate changes
             winrate_change = abs(current_winrate - prev_winrate)
             lead_change = abs(current_lead - prev_lead)
-            
+
             if verbose:
                 print(f"  Winrate: {current_winrate:.2%} (Δ{winrate_change:.2%})")
                 print(f"  Lead: {current_lead:.1f} (Δ{lead_change:.1f})")
-            
+            elif (i + 1) % 20 == 0:
+                print(f"  ... move {i + 1}/{len(moves)} (puzzles found so far: {len(puzzles)})")
+
+            in_cooldown = i <= cooldown_until
+            if verbose and in_cooldown:
+                print(f"  (cooldown active until move {cooldown_until + 1})")
+
             # Check if this position marks the start of a puzzle
-            if winrate_change >= self.WINRATE_THRESHOLD and lead_change >= self.LEAD_THRESHOLD:
+            if not in_cooldown and winrate_change >= self.WINRATE_THRESHOLD and lead_change >= self.LEAD_THRESHOLD:
                 if verbose:
                     print(f"\n*** PUZZLE DETECTED at move {i+1}! ***")
                     print(f"    Winrate change: {winrate_change:.2%}")
                     print(f"    Lead change: {lead_change:.1f}")
-                
-                # Create puzzle and find the solution sequence
+
                 puzzle = Puzzle(
                     start_move_index=i,
-                    moves=moves[:i],  # Moves before the puzzle
+                    moves=moves[:i],
                     initial_winrate=winrate_change,
                     initial_lead=lead_change
                 )
-                
-                # Find the puzzle solution sequence
+
                 self._find_puzzle_sequence(puzzle, moves[:i], verbose)
                 puzzles.append(puzzle)
-            
+
+                # Suppress detection for the length of the solution sequence (min MIN_COOLDOWN_MOVES)
+                cooldown_until = i + max(len(puzzle.puzzle_sequence), self.MIN_COOLDOWN_MOVES)
+                if verbose:
+                    print(f"  Cooldown set: skipping detection until move {cooldown_until + 1}")
+
             prev_winrate = current_winrate
             prev_lead = current_lead
-        
+
         return winrates, leads, puzzles
     
     def _find_puzzle_sequence(self, puzzle: Puzzle, base_moves: List[Tuple[Color, Move]], verbose: bool = True):
@@ -302,9 +335,31 @@ class PuzzleFinder:
             opponent_converted = self._str_to_move(opponent_move_str, next_color)
             current_moves.append(opponent_converted)
             puzzle.puzzle_sequence.append(opponent_converted)
-            
+
             if verbose:
                 print(f"    Response: {next_color} plays {opponent_move_str}")
+
+            # Also test pass swing after opponent responds — puzzle may be resolved here
+            pass_swing = self._test_pass_swing(current_moves)
+
+            if verbose:
+                print(f"      Pass swing after response: {pass_swing:.1f} points")
+
+            if pass_swing < self.PASS_SWING_THRESHOLD:
+                if verbose:
+                    print(f"  Puzzle sequence complete after opponent response! Pass swing ({pass_swing:.1f}) < threshold ({self.PASS_SWING_THRESHOLD})")
+
+                final_resp = self.katago.query(self.board, current_moves, self.komi)
+                raw_final_winrate = final_resp['rootInfo']['rawWinrate']
+                raw_final_lead = final_resp['rootInfo']['rawLead']
+                current_player = final_resp['rootInfo']['currentPlayer']
+                if current_player == 'w':
+                    puzzle.final_winrate = 1 - raw_final_winrate
+                    puzzle.final_lead = -raw_final_lead
+                else:
+                    puzzle.final_winrate = raw_final_winrate
+                    puzzle.final_lead = raw_final_lead
+                break
     
     def _test_pass_swing(self, moves: List[Tuple[Color, Move]]) -> float:
         """
@@ -364,9 +419,11 @@ def find_puzzles_in_game(moves: List[Tuple[Color, Move]], katago: KataGo, komi: 
     Returns:
         List of Puzzle objects found
     """
+    print(f"  Analyzing {len(moves)} moves...")
     finder = PuzzleFinder(katago, komi)
     winrates, leads, puzzles = finder.analyze_game(moves, verbose)
-    
+    print(f"  Done. Found {len(puzzles)} puzzle(s).")
+
     if verbose:
         print(f"\n{'='*50}")
         print(f"Analysis complete!")
@@ -383,8 +440,270 @@ def find_puzzles_in_game(moves: List[Tuple[Color, Move]], katago: KataGo, komi: 
     return puzzles
 
 
+# ---------------------------------------------------------------------------
+# Stone pruning – remove unnecessary stones from puzzles
+# ---------------------------------------------------------------------------
+
+def _find_stone_groups(board: sgfmill.boards.Board, board_size: int = 19) -> List[Dict]:
+    """Find connected groups of same-colour stones using BFS.
+
+    Returns a list of dicts: {'color': 'b'|'w', 'stones': [(row, col), ...]}.
+    """
+    visited: set = set()
+    groups: List[Dict] = []
+
+    for row in range(board_size):
+        for col in range(board_size):
+            if (row, col) in visited:
+                continue
+            color = board.get(row, col)
+            if color is None:
+                continue
+
+            # BFS flood-fill
+            group_stones = []
+            queue = [(row, col)]
+            while queue:
+                r, c = queue.pop(0)
+                if (r, c) in visited:
+                    continue
+                if board.get(r, c) != color:
+                    continue
+                visited.add((r, c))
+                group_stones.append((r, c))
+                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < board_size and 0 <= nc < board_size:
+                        queue.append((nr, nc))
+
+            groups.append({'color': color, 'stones': group_stones})
+
+    return groups
+
+
+def _get_puzzle_region(puzzle_sequence: List[Tuple[Color, Move]], margin: int, board_size: int = 19) -> set:
+    """Return the set of (row, col) within *margin* Chebyshev distance of any solution move."""
+    coords = set()
+    for _color, move in puzzle_sequence:
+        if move is not None and move != "pass":
+            coords.add(move)
+
+    region: set = set()
+    for (r, c) in coords:
+        for dr in range(-margin, margin + 1):
+            for dc in range(-margin, margin + 1):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < board_size and 0 <= nc < board_size:
+                    region.add((nr, nc))
+    return region
+
+
+def _verify_solution(katago: KataGo, stones: List[Tuple[Color, Tuple[int, int]]],
+                     puzzle_sequence: List[Tuple[Color, Move]], komi: float,
+                     board_size: int = 19) -> bool:
+    """Check that the first move of the puzzle solution is still KataGo's top choice."""
+    if not puzzle_sequence:
+        return True
+
+    resp = katago.query_stones(stones, [], komi, board_size)
+    if not resp.get('moveInfos'):
+        return False
+
+    best_move = resp['moveInfos'][0]['move']
+    expected = sgfmill_to_str(puzzle_sequence[0][1])
+    return best_move == expected
+
+
+def remove_unnecessary_stones(puzzle: Puzzle, katago: KataGo, komi: float,
+                              margin: int = 5, board_size: int = 19) -> Puzzle:
+    """Remove stones that don't affect the puzzle solution (hybrid approach).
+
+    1. Proximity heuristic: stones inside the puzzle region (solution coords
+       expanded by *margin*) are kept automatically.
+    2. KataGo verification: remaining groups are tested for removal – if the
+       best first move is unchanged, the group is unnecessary.
+
+    Sets ``puzzle.initial_stones`` to the pruned stone list and returns the
+    puzzle.
+    """
+    # 1. Reconstruct board from game moves
+    board = sgfmill.boards.Board(board_size)
+    for color, move in puzzle.moves:
+        if move is not None and move != "pass":
+            row, col = move
+            board.play(row, col, color)
+
+    # 2. Extract all stones
+    all_stones: List[Tuple[Color, Tuple[int, int]]] = []
+    for row in range(board_size):
+        for col in range(board_size):
+            color = board.get(row, col)
+            if color:
+                all_stones.append((color, (row, col)))
+
+    original_count = len(all_stones)
+
+    # 3. Compute puzzle region
+    puzzle_region = _get_puzzle_region(puzzle.puzzle_sequence, margin, board_size)
+
+    # 4. Find stone groups and classify
+    groups = _find_stone_groups(board, board_size)
+
+    candidate_groups = []
+    for group in groups:
+        if any(coord in puzzle_region for coord in group['stones']):
+            continue  # keep – overlaps puzzle region
+        candidate_groups.append(group)
+
+    # 5. Sort candidates farthest-from-puzzle first
+    puzzle_coords = set()
+    for _color, move in puzzle.puzzle_sequence:
+        if move is not None and move != "pass":
+            puzzle_coords.add(move)
+
+    def _min_distance(group):
+        """Minimum Chebyshev distance from any group stone to any puzzle coord."""
+        if not puzzle_coords:
+            return 0
+        return min(
+            max(abs(sr - pr), abs(sc - pc))
+            for sr, sc in group['stones']
+            for pr, pc in puzzle_coords
+        )
+
+    candidate_groups.sort(key=_min_distance, reverse=True)
+
+    # 6. Cumulatively try removing each candidate group
+    removed_coords: set = set()
+    for group in candidate_groups:
+        test_stones = [s for s in all_stones
+                       if s[1] not in removed_coords and s[1] not in set(group['stones'])]
+
+        if _verify_solution(katago, test_stones, puzzle.puzzle_sequence, komi, board_size):
+            removed_coords.update(group['stones'])
+
+    # 7. Store pruned stone list
+    pruned_stones = [s for s in all_stones if s[1] not in removed_coords]
+    puzzle.initial_stones = pruned_stones
+
+    pruned_count = len(pruned_stones)
+    print(f"    Stone pruning: {original_count} → {pruned_count} stones "
+          f"(removed {original_count - pruned_count})")
+
+    return puzzle
+
+
+def _coord_to_sgf(row: int, col: int, board_size: int = 19) -> str:
+    """Convert sgfmill (row, col) to a two-letter SGF coordinate.
+
+    sgfmill: row=0 is the bottom edge.
+    SGF:     first letter = column (a=left), second = row (a=top).
+    """
+    sgf_col = chr(ord('a') + col)
+    sgf_row = chr(ord('a') + (board_size - 1 - row))
+    return sgf_col + sgf_row
+
+
+def puzzle_to_sgf(puzzle: 'Puzzle', game_id: int, komi: float,
+                  board_size: int = 19, use_trimmed: bool = False) -> str:
+    """Render a Puzzle as an SGF string.
+
+    The root node contains the board position just before the puzzle move as
+    setup stones (AB/AW).  The solution sequence follows as regular move nodes.
+
+    When *use_trimmed* is True and ``puzzle.initial_stones`` is set, the pruned
+    stone list is used instead of replaying the full game history.
+    """
+    # Collect black and white stones
+    black_stones = []
+    white_stones = []
+
+    if use_trimmed and puzzle.initial_stones is not None:
+        for color, (row, col) in puzzle.initial_stones:
+            if color == 'b':
+                black_stones.append(_coord_to_sgf(row, col, board_size))
+            elif color == 'w':
+                white_stones.append(_coord_to_sgf(row, col, board_size))
+    else:
+        # Replay game moves to build the position at the puzzle start
+        board = sgfmill.boards.Board(board_size)
+        for color, move in puzzle.moves:
+            if move is not None and move != "pass":
+                row, col = move
+                board.play(row, col, color)
+
+        for row in range(board_size):
+            for col in range(board_size):
+                color = board.get(row, col)
+                if color == 'b':
+                    black_stones.append(_coord_to_sgf(row, col, board_size))
+                elif color == 'w':
+                    white_stones.append(_coord_to_sgf(row, col, board_size))
+
+    # Determine who moves first in the solution
+    first_color = puzzle.puzzle_sequence[0][0] if puzzle.puzzle_sequence else 'b'
+    pl_tag = "B" if first_color == 'b' else "W"
+
+    # Build root node
+    root = (
+        f"FF[4]GM[1]SZ[{board_size}]KM[{komi}]"
+        f"GN[Game {game_id} \u2013 puzzle at move {puzzle.start_move_index}]"
+        f"C[Source: OGS game {game_id}, move {puzzle.start_move_index}.\\n"
+        f"Winrate swing: {puzzle.initial_winrate:.1%}  Lead swing: {puzzle.initial_lead:.1f} pts.]"
+        f"PL[{pl_tag}]"
+    )
+    if black_stones:
+        root += "AB" + "".join(f"[{s}]" for s in black_stones)
+    if white_stones:
+        root += "AW" + "".join(f"[{s}]" for s in white_stones)
+
+    # Build solution move nodes
+    move_nodes = ""
+    for color, move in puzzle.puzzle_sequence:
+        sgf_color = "B" if color == 'b' else "W"
+        if move is None or move == "pass":
+            move_nodes += f";{sgf_color}[]"
+        else:
+            row, col = move
+            move_nodes += f";{sgf_color}[{_coord_to_sgf(row, col, board_size)}]"
+
+    return f"(;{root}{move_nodes})\n"
+
+
+def save_puzzles_to_sgf(puzzles: List['Puzzle'], game_id: int, komi: float,
+                         output_dir: str = "puzzles") -> List[str]:
+    """Save each puzzle to SGF files.
+
+    For every puzzle two files are written:
+    - ``game_{game_id}_puzzle_{n}.sgf``          – original (all stones)
+    - ``game_{game_id}_puzzle_{n}_trimmed.sgf``  – pruned version (if available)
+
+    Returns the list of all file paths written.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    paths = []
+    for n, puzzle in enumerate(puzzles, start=1):
+        # Original version (always saved)
+        orig_filename = f"game_{game_id}_puzzle_{n}.sgf"
+        orig_path = os.path.join(output_dir, orig_filename)
+        with open(orig_path, "w", encoding="utf-8") as f:
+            f.write(puzzle_to_sgf(puzzle, game_id, komi, use_trimmed=False))
+        paths.append(orig_path)
+        print(f"  Saved puzzle {n} → {orig_path}")
+
+        # Trimmed version (only if stones were pruned)
+        if puzzle.initial_stones is not None:
+            trim_filename = f"game_{game_id}_puzzle_{n}_trimmed.sgf"
+            trim_path = os.path.join(output_dir, trim_filename)
+            with open(trim_path, "w", encoding="utf-8") as f:
+                f.write(puzzle_to_sgf(puzzle, game_id, komi, use_trimmed=True))
+            paths.append(trim_path)
+            print(f"  Saved puzzle {n} (trimmed) → {trim_path}")
+    return paths
+
+
 def winrate(moves, katago):
-    """Legacy function - now wraps find_puzzles_in_game"""
+    """Legacy analysis function kept for backward compatibility."""
     board = sgfmill.boards.Board(19)
     komi = 6.5
 
@@ -420,63 +739,3 @@ def winrate(moves, katago):
     return win_percent
 
 
-# converts the result from kata such as Q16 to ['b', (16, 16)] for the sgfmill
-def convert_move(moves, new_move):
-    length = len(moves)
-    color = moves[length - 1][0]
-    if color == "b":
-        color = "w"
-    else:
-        color = "b"
-
-    letter = new_move[0]
-    number = new_move[1:]
-    letter_to_number = lambda letter: ord(letter) - ord('A') - (1 if letter > 'I' else 0)
-    return (color, (letter_to_number(letter) + 1, int(number)))
-
-# note we can change the strngth of the second player to maybe get mroe intersting local moves
-
-def play_best_move(board, moves, komi, katago):
-    kata_rep = katago.query(board, moves, komi)
-    move = kata_rep['moveInfos'][0]['move']
-    win_rate  = kata_rep['rootInfo']['rawWinrate']
-    raw_Lead = kata_rep['rootInfo']['rawLead']
-    converted_move = convert_move(moves, move)
-    moves.append(converted_move)
-    return moves, win_rate, raw_Lead
-
-def play_pass(board, moves, komi, katago):
-    length = len(moves)
-    color = moves[length - 1][0]
-    if color == "b":
-        color = "w"
-    else:
-        color = "b"
-    move = [color, None]
-
-    converted_move = convert_move(moves, move)
-    moves.append(converted_move)
-    kata_rep = katago.query(board, moves, komi)
-    win_rate = kata_rep['rootInfo']['rawWinrate']
-    raw_Lead = kata_rep['rootInfo']['rawLead']
-    return moves, win_rate, raw_Lead
-
-# will run the algorithm to get the sequence of moves that defines a puzzle
-def get_sequence(board, moves, komi, katago):
-    moves_len = len(moves)
-    flag = False
-    # play for the person I care about
-    moves, _, _ = play_best_move(board, moves, komi, katago)
-
-    # play for the other person
-    moves, old_winrate, _ = play_best_move(board, moves, komi, katago)
-
-    while flag == False:
-        moves, new_winrate, _ = play_pass(board, moves, komi, katago)
-        delta = abs(old_winrate - winrate)
-        if delta > .5:
-            play_best_move()
-            play_best_move()
-        else:
-            moves = 'waddle'
-            return moves[moves_len:  ]

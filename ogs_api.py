@@ -1,5 +1,5 @@
 import requests
-from main import KataGo, winrate, find_puzzles_in_game
+from main import KataGo, find_puzzles_in_game, save_puzzles_to_sgf, remove_unnecessary_stones
 
 def get_moves(id: int):
     url = f'https://online-go.com/api/v1/games/{id}'
@@ -64,10 +64,13 @@ def analyze_player_games(player_id: int, max_games: int = 100, verbose: bool = T
                 continue
 
             puzzles = find_puzzles_in_game(moves, katago, komi=komi, verbose=verbose)
-            
+
             if puzzles:
                 all_puzzles[game_id] = puzzles
                 print(f"\nFound {len(puzzles)} puzzle(s) in game {game_id}!")
+                for puzzle in puzzles:
+                    remove_unnecessary_stones(puzzle, katago, komi)
+                save_puzzles_to_sgf(puzzles, game_id, komi)
         
         return all_puzzles
     
@@ -76,8 +79,8 @@ def analyze_player_games(player_id: int, max_games: int = 100, verbose: bool = T
 """
 if __name__ == "__main__":
     # Example usage: analyze games from player 722642
-    player_id = 946392
-    puzzles = analyze_player_games(player_id, max_games=1000, verbose=True)
+    player_id = 722642
+    puzzles = analyze_player_games(player_id, max_games=1000, verbose=False)
     
     print(f"\n\n{'#'*60}")
     print("SUMMARY")
@@ -95,10 +98,14 @@ if __name__ == "__main__":
 """
 if __name__ == "__main__":
     # Analyze one example game
-    game_id = 81997022
+    game_id = 82157105
     katago = KataGo('kata/katago.exe', 'kata/default_gtp.cfg', 'kata/kata1-b28c512nbt-s8268121856-d4612191185.bin.gz')
     moves, komi = get_moves(game_id)
-    puzzles = find_puzzles_in_game(moves, katago, komi=komi, verbose=True)
+    puzzles = find_puzzles_in_game(moves, katago, komi=komi, verbose=False)
+    for puzzle in puzzles:
+        remove_unnecessary_stones(puzzle, katago, komi)
+    save_puzzles_to_sgf(puzzles, game_id, komi)
     print(f"\nPuzzles found in game {game_id}:")
     for i, puzzle in enumerate(puzzles):
         print(f"  Puzzle {i+1}: {puzzle}")
+    katago.close()
